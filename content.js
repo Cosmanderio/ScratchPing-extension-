@@ -1,195 +1,327 @@
-// Extrait l'ID du projet depuis l'URL
+// =========================
+// Utilitaires
+// =========================
+
 function getProjectId() {
-    const match = location.pathname.match(/\/projects\/(\d+)/) 
-               ?? location.pathname.match(/^\/(\d+)/);
+    const match =
+        location.pathname.match(/\/projects\/(\d+)/) ||
+        location.pathname.match(/^\/(\d+)/);
+
     return match ? match[1] : null;
 }
 
-// Vérifie si le projet a des variables cloud
-async function hasCloudVars(projectId) {
+function getProjects() {
+    return new Promise(resolve => {
+        chrome.storage.local.get("projects", data => {
+            resolve(data.projects || []);
+        });
+    });
+}
+
+function setProjects(projects) {
+    return new Promise(resolve => {
+        chrome.storage.local.set({ projects }, resolve);
+    });
+}
+
+async function isAlreadyAdded(projectId) {
+    const projects = await getProjects();
+
+    return projects.some(
+        p => String(p.id) === String(projectId)
+    );
+}
+
+// Envoi de message sécurisé au background script
+async function sendMsg(msg) {
     try {
-        const res  = await fetch(`https://api.scratch.mit.edu/projects/${projectId}`);
-        const data = await res.json();
-        // Cherche dans les assets ou via clouddata
-        const logsRes = await fetch(`https://clouddata.scratch.mit.edu/logs?projectid=${projectId}&limit=1`);
-        // Si la réponse est OK et contient du JSON, le projet a des cloud vars
-        if (logsRes.ok) {
-            const logs = await logsRes.json();
-            return Array.isArray(logs); // true si le projet supporte les cloud vars
+        return await chrome.runtime.sendMessage(msg);
+    } catch (err) {
+        console.error("ScratchPing communication error:", err);
+        return null;
+    }
+}
+
+// Convertit un timestamp en temps relatif (ex: "3m ago")
+function tempsRelatif(timestamp) {
+    const diff = Math.floor((Date.now() - timestamp) / 1000);
+    if (diff < 60)    return `${diff}s ago`;
+    if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+}
+
+// =========================
+// Ajout / Suppression de projet
+// =========================
+
+async function addProject(projectId) {
+    try {
+        const projects = await getProjects();
+
+        if (projects.some(p => String(p.id) === String(projectId))) {
+            return false;
         }
-        return false;
-    } catch {
+
+        const sessionId = await sendMsg({ type: 'GET_SESSION' });
+        const info = await sendMsg({ type: 'GET_PROJECT_INFO', projectId, sessionId });
+
+        if (!info) return false;
+
+        const name = info.name
+            .replace(/\(.*?\)/g, "")
+            .replace(/\[.*?\]/g, "")
+            .replace(/#\S+/g, "")
+            .replace(/\s*v?\d+(\.\d+)+\s*/gi, "")
+            .replace(/\s+(alpha|beta|bêta)\s*$/i, "")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        projects.push({
+            id: Number(projectId),
+            name
+        });
+
+        await setProjects(projects);
+        await sendMsg({ type: 'ENSURE_TW_CONNECTIONS', projectIds: projects.map(p => p.id) });
+
+        return true;
+    } catch (err) {
+        console.error(err);
         return false;
     }
 }
 
-// Vérifie si le projet est déjà dans ScratchPing
-async function isAlreadyAdded(projectId) {
-    return new Promise(resolve => {
-        chrome.storage.local.get('projects', data => {
-            const projects = data.projects ?? [];
-            resolve(projects.some(p => String(p.id) === String(projectId)));
-        });
-    });
+async function removeProject(projectId) {
+    try {
+        const projects = await getProjects();
+        const filtered = projects.filter(p => String(p.id) !== String(projectId));
+
+        await setProjects(filtered);
+        await sendMsg({ type: 'ENSURE_TW_CONNECTIONS', projectIds: filtered.map(p => p.id) });
+
+        return true;
+    } catch (err) {
+        console.error(err);
+        return false;
+    }
 }
 
-// Ajoute le projet à ScratchPing
-async function addProject(projectId) {
-    return new Promise(resolve => {
-        chrome.storage.local.get('projects', async data => {
-            const projects = data.projects ?? [];
-            if (projects.some(p => String(p.id) === String(projectId))) {
-                resolve(false);
-                return;
-            }
+// =========================
+// Liste des actifs sur le projet (Style Texte Brut Alignement Droite)
+// =========================
 
-            try {
-                const res  = await fetch(`https://api.scratch.mit.edu/projects/${projectId}`);
-                const info = await res.json();
-                const name = info.title
-                    .replace(/\(.*?\)/g, '')
-                    .replace(/\[.*?\]/g, '')
-                    .replace(/#\S+/g, '')
-                    .replace(/\s*v?\d+(\.\d+)+\s*/gi, '')
-                    .replace(/\s+(alpha|beta|bêta)\s*$/i, '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
+async function createProjectsList() {
+    const projectId = getProjectId();
+    if (!projectId) return;
 
-                projects.push({ id: parseInt(projectId), name });
-                chrome.storage.local.set({ projects }, () => resolve(true));
-            } catch {
-                resolve(false);
+    // Supprime l'ancienne liste si elle existe déjà
+    document.getElementById("scratchping-list")?.remove();
+
+    const container = document.createElement("div");
+    container.id = "scratchping-list";
+
+    // Style minimaliste : transparent, pas de box, aligné à droite
+    container.style.cssText = `
+        position: fixed;
+        bottom: 80px;
+        right: 25px;
+        width: 250px;
+        max-height: 250px;
+        overflow-y: auto;
+        background: transparent;
+        padding: 0;
+        z-index: 999998;
+        font-family: Outfit, sans-serif;
+        text-align: right;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+    `;
+
+    const title = document.createElement("div");
+    title.textContent = "Active Players";
+    title.style.cssText = `
+        font-weight: 700;
+        margin-bottom: 6px;
+        color: #855cd6;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    `;
+    container.appendChild(title);
+
+    // Récupération de la session et des logs cloud via le background script
+    const sessionId = await sendMsg({ type: 'GET_SESSION' });
+    const logs = await sendMsg({ type: 'GET_SCRATCH_LOGS', projectId, sessionId });
+
+    const CINQ_MIN = 5 * 60 * 1000;
+    const now = Date.now();
+    const lastSeen = {};
+
+    if (logs && Array.isArray(logs)) {
+        logs.forEach(log => {
+            const tsMs = log.timestamp < 1e10 ? log.timestamp * 1000 : log.timestamp;
+            if ((now - tsMs) < CINQ_MIN) {
+                if (!lastSeen[log.user] || tsMs > lastSeen[log.user]) {
+                    lastSeen[log.user] = tsMs;
+                }
             }
         });
-    });
+    }
+
+    const activePlayers = Object.entries(lastSeen).sort((a, b) => b[1] - a[1]);
+
+    if (activePlayers.length === 0) {
+        const empty = document.createElement("div");
+        empty.textContent = "None";
+        empty.style.cssText = `
+            opacity: .5;
+            font-size: 12px;
+            font-style: italic;
+            color: #575e75;
+        `;
+        container.appendChild(empty);
+    } else {
+        activePlayers.forEach(([user, ts]) => {
+            const item = document.createElement("div");
+            item.style.cssText = `
+                padding: 3px 0;
+                font-size: 13px;
+                color: #575e75;
+                display: block;
+            `;
+
+            const userLink = document.createElement("a");
+            userLink.href = `https://scratch.mit.edu/users/${user}`;
+            userLink.target = "_blank";
+            userLink.textContent = user;
+            userLink.style.cssText = `
+                color: #855cd6;
+                text-decoration: none;
+                font-weight: 600;
+                margin-right: 6px;
+            `;
+
+            const timeSpan = document.createElement("span");
+            timeSpan.textContent = `(${tempsRelatif(ts)})`;
+            timeSpan.style.cssText = `
+                opacity: 0.5;
+                font-size: 11px;
+            `;
+
+            item.appendChild(userLink);
+            item.appendChild(timeSpan);
+            container.appendChild(item);
+        });
+    }
+
+    document.body.appendChild(container);
 }
 
-// Crée et injecte le bouton
+// =========================
+// Bouton principal
+// =========================
+
 async function injectButton(projectId) {
-    // Évite les doublons
-    if (document.getElementById('scratchping-btn')) return;
+    document.getElementById("scratchping-btn")?.remove();
 
-    const alreadyAdded = await isAlreadyAdded(projectId);
+    let alreadyAdded = await isAlreadyAdded(projectId);
 
-    const btn = document.createElement('button');
-    btn.id = 'scratchping-btn';
-    btn.innerHTML = alreadyAdded
-        ? `<img src="${chrome.runtime.getURL('icons/icon16_normal.png')}" style="width:14px;vertical-align:middle;margin-right:5px"> Already in ScratchPing`
-        : `<img src="${chrome.runtime.getURL('icons/icon16_normal.png')}" style="width:14px;vertical-align:middle;margin-right:5px"> Add to ScratchPing`;
-
+    const btn = document.createElement("button");
+    btn.id = "scratchping-btn";
     btn.style.cssText = `
         position: fixed;
         bottom: 20px;
-        right: 20px;
-        z-index: 99999;
-        background: ${alreadyAdded ? '#e8e0f8' : '#855cd6'};
-        color: ${alreadyAdded ? '#855cd6' : 'white'};
+        right: 25px;
+        z-index: 999999;
         border: none;
         border-radius: 12px;
         padding: 10px 16px;
         font-size: 13px;
         font-weight: 600;
-        font-family: 'Outfit', sans-serif;
-        cursor: ${alreadyAdded ? 'default' : 'pointer'};
-        box-shadow: 0 4px 16px rgba(133,92,214,0.35);
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        transition: background 200ms, transform 100ms;
+        font-family: Outfit, sans-serif;
+        box-shadow: 0 4px 16px rgba(133,92,214,.35);
+        cursor: pointer;
+        transition: .2s;
     `;
 
-    if (!alreadyAdded) {
-        btn.addEventListener('mouseenter', () => btn.style.background = '#7048c8');
-        btn.addEventListener('mouseleave', () => btn.style.background = '#855cd6');
-        btn.addEventListener('mousedown',  () => btn.style.transform  = 'scale(0.97)');
-        btn.addEventListener('mouseup',    () => btn.style.transform  = 'scale(1)');
+    function updateButton() {
+        if (alreadyAdded) {
+            btn.innerHTML = `<img src="${chrome.runtime.getURL("icons/icon16_normal.png")}" style="width:14px;vertical-align:middle;margin-right:5px"> Already in ScratchPing`;
+            btn.style.background = "#e8e0f8";
+            btn.style.color = "#855cd6";
+        } else {
+            btn.innerHTML = `<img src="${chrome.runtime.getURL("icons/icon16_normal.png")}" style="width:14px;vertical-align:middle;margin-right:5px"> Add to ScratchPing`;
+            btn.style.background = "#855cd6";
+            btn.style.color = "white";
+        }
+    }
 
-        btn.addEventListener('click', async () => {
-            btn.innerHTML = '⏳ Adding...';
-            btn.style.background = '#aaa';
-            btn.style.cursor     = 'default';
+    updateButton();
 
+    btn.addEventListener("click", async () => {
+        if (btn.dataset.busy) return;
+        btn.dataset.busy = "1";
+
+        if (!alreadyAdded) {
+            btn.innerHTML = "⏳ Adding...";
             const success = await addProject(projectId);
-
             if (success) {
-                btn.innerHTML = `<img src="${chrome.runtime.getURL('icons/icon16_normal.png')}" style="width:14px;vertical-align:middle;margin-right:5px"> ✓ Added to ScratchPing!`;
-                btn.style.background = '#e8e0f8';
-                btn.style.color      = '#855cd6';
+                alreadyAdded = true;
+                updateButton();
             } else {
-                btn.innerHTML = '❌ Error';
-                btn.style.background = '#fde';
-                btn.style.color      = '#e74c3c';
+                btn.innerHTML = "❌ Error";
             }
-        });
-    }
+        } else {
+            btn.innerHTML = "⏳ Removing...";
+            const success = await removeProject(projectId);
+            if (success) {
+                alreadyAdded = false;
+                updateButton();
+            } else {
+                btn.innerHTML = "❌ Error";
+            }
+        }
 
-    // Cherche la div project-buttons (boutons Scratch : Remix, See inside...)
-    const projectButtons = document.querySelector('.project-buttons');
-    if (projectButtons) {
-        // Retire le style fixed pour s'intégrer dans la page
-        btn.style.cssText = `
-            background: ${alreadyAdded ? '#e8e0f8' : '#855cd6'};
-            color: ${alreadyAdded ? '#855cd6' : 'white'};
-            border: none;
-            border-radius: 8px;
-            padding: 8px 14px;
-            font-size: 13px;
-            font-weight: 600;
-            font-family: sans-serif;
-            cursor: ${alreadyAdded ? 'default' : 'pointer'};
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            margin-left: 8px;
-            transition: background 200ms;
-        `;
-        projectButtons.appendChild(btn);
-    } else {
-        // Fallback : fixed en bas à droite
-        document.body.appendChild(btn);
-    }
-}
-
-// Attend qu'un élément apparaisse dans le DOM
-function waitForElement(selector, timeout = 10000) {
-    return new Promise((resolve, reject) => {
-        const el = document.querySelector(selector);
-        if (el) { resolve(el); return; }
-
-        const observer = new MutationObserver(() => {
-            const el = document.querySelector(selector);
-            if (el) { observer.disconnect(); resolve(el); }
-        });
-        observer.observe(document.body, { subtree: true, childList: true });
-        setTimeout(() => { observer.disconnect(); reject(); }, timeout);
+        delete btn.dataset.busy;
     });
+
+    document.body.appendChild(btn);
 }
 
-// Point d'entrée
+// =========================
+// Initialisation
+// =========================
+
 async function main() {
     const projectId = getProjectId();
     if (!projectId) return;
 
-    try {
-        await waitForElement('.project-buttons');
-    } catch {
-        return; // div pas trouvée dans les 10s
-    }
-
-    const hasCloud = await hasCloudVars(projectId);
-    if (hasCloud) {
-        injectButton(projectId);
-    }
+    await createProjectsList();
+    await injectButton(projectId);
 }
 
 main();
 
-// Écoute les changements d'URL (SPA navigation sur Scratch)
+// Actualisation automatique de la liste de joueurs toutes les 15 secondes
+setInterval(() => {
+    const projectId = getProjectId();
+    if (projectId) createProjectsList();
+}, 15000);
+
+// =========================
+// Navigation Scratch SPA
+// =========================
+
 let lastUrl = location.href;
+
 new MutationObserver(() => {
     if (location.href !== lastUrl) {
         lastUrl = location.href;
-        document.getElementById('scratchping-btn')?.remove();
         main();
     }
-}).observe(document.body, { subtree: true, childList: true });
+}).observe(document.body, {
+    subtree: true,
+    childList: true
+});
