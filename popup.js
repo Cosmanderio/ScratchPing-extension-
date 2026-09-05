@@ -1,3 +1,5 @@
+import {saveProjects, loadProjects} from "./utils.js"
+
 // =====================
 // STATE
 // =====================
@@ -12,12 +14,47 @@ let pseudo      = null;
 // =====================
 
 function setIcon(etat) {
-    chrome.action.setIcon({
+    chrome.browserAction.setIcon({
         path: {
             16:  `icons/icon16_${etat}.png`,
             48:  `icons/icon48_${etat}.png`,
             128: `icons/icon128_${etat}.png`
         }
+    });
+}
+
+// =====================
+// PROMPT + ALERT
+// =====================
+
+async function prompt(text) {
+    const div = document.querySelector("#prompt_alert");
+    div.style.display = "flex";
+    const prompt_input = div.querySelector("#prompt_txt_input");
+    const prompt_btn = div.querySelector("#prompt_btn");
+    prompt_btn.style.translate = "";
+    prompt_input.style.display = "";
+    div.querySelector("#prompt_txt").textContent = text;
+    return new Promise(resolve => {
+        prompt_btn.addEventListener("click", () => {
+            div.style.display = "none";
+            resolve(prompt_input.value);
+        }, {once: true});
+    });
+}
+
+async function alert(text) {
+    const div = document.querySelector("#prompt_alert");
+    div.style.display = "flex";
+    div.querySelector("#prompt_txt_input").style.display = "none";
+    const prompt_btn = div.querySelector("#prompt_btn");
+    prompt_btn.style.translate = "0 25px";
+    div.querySelector("#prompt_txt").textContent = text;
+    return new Promise(resolve => {
+        prompt_btn.addEventListener("click", () => {
+            div.style.display = "none";
+            resolve();
+        }, {once: true});
     });
 }
 
@@ -29,25 +66,14 @@ const port = chrome.runtime.connect({ name: 'keepAlive' });
 
 async function sendMsg(msg) {
     try {
-        return await chrome.runtime.sendMessage(msg);
+        // Firefox exposes its promise-based WebExtension API as `browser`.
+        // `chrome.runtime.sendMessage` returns undefined here before the
+        // background script has completed an asynchronous response.
+        return await browser.runtime.sendMessage(msg);
     } catch {
         await new Promise(r => setTimeout(r, 200));
-        return await chrome.runtime.sendMessage(msg);
+        return await browser.runtime.sendMessage(msg);
     }
-}
-
-// =====================
-// PROJETS (chrome.storage)
-// =====================
-
-async function loadProjects() {
-    return new Promise(resolve => {
-        chrome.storage.local.get('projects', data => resolve(data.projects ?? []));
-    });
-}
-
-async function saveProjects(projects) {
-    return new Promise(resolve => chrome.storage.local.set({ projects }, resolve));
 }
 
 // =====================
@@ -55,7 +81,9 @@ async function saveProjects(projects) {
 // =====================
 
 async function init() {
+    console.info('ScratchPing: popup initialising.');
     sessionId = await sendMsg({ type: 'GET_SESSION' });
+    console.info(`ScratchPing: popup received ${sessionId ? 'a session' : 'no session'}.`);
 
     if (!sessionId) {
         setIcon('disconnected');
@@ -69,7 +97,7 @@ async function init() {
 
     pseudo = localStorage.getItem('pseudo');
     if (!pseudo) {
-        pseudo = prompt("Your Scratch username?");
+        pseudo = await prompt("Your Scratch username?");
         localStorage.setItem('pseudo', pseudo);
     }
 
@@ -87,8 +115,7 @@ async function init() {
 document.getElementById('retry_btn').addEventListener('click', init);
 document.getElementById('refresh_btn').addEventListener('click', afficherProjets);
 document.getElementById('export_btn').addEventListener('click', exportProjects);
-document.getElementById('import_btn').addEventListener('click', () => document.getElementById('import_file').click());
-document.getElementById('import_file').addEventListener('change', importProjects);
+document.getElementById('import_btn').addEventListener('click', importPopup);
 
 // =====================
 // INPUT CLEAR BUTTON
@@ -233,7 +260,7 @@ function updateIcon(projects, twActive) {
         const jeJoueScratch = meScratch ? (Date.now() - meScratch[1]) < CINQ_MIN : false;
         if (jeJoueScratch) surScratch = true;
     });
-    const nouvelIcon = surScratch ? 'active_scratch' : 'normal';
+    const nouvelIcon = surScratch ? 'active' : 'normal';
     if (nouvelIcon !== etaitEtat) { etaitEtat = nouvelIcon; setIcon(nouvelIcon); }
 }
 
@@ -480,51 +507,16 @@ async function exportProjects() {
     URL.revokeObjectURL(url);
 }
 
-async function importProjects(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    // Reset l'input pour pouvoir réimporter le même fichier
-    e.target.value = '';
-
-    let parsed;
-    try {
-        parsed = JSON.parse(await file.text());
-    } catch {
-        alert('❌ Invalid file.');
-        return;
-    }
-
-    if (!parsed.scratchping || !Array.isArray(parsed.projects)) {
-        alert('❌ This file is not a ScratchPing export.');
-        return;
-    }
-
-    const existing = await loadProjects();
-    const existingIds = new Set(existing.map(p => p.id));
-
-    let added = 0;
-    for (const p of parsed.projects) {
-        if (!p.id || !p.name) continue;
-        if (existingIds.has(p.id)) continue;
-        existing.push({ id: p.id, name: p.name });
-        existingIds.add(p.id);
-        added++;
-    }
-
-    if (added === 0) {
-        alert('⚠️ All projects are already in your list.');
-        return;
-    }
-
-    await saveProjects(existing);
-    await sendMsg({ type: 'ENSURE_TW_CONNECTIONS', projectIds: existing.map(p => p.id) });
-    alert(`✅ ${added} project(s) imported!`);
-    afficherProjets();
+function importPopup() {
+    browser.windows.create({
+        type: "popup",
+        height: 280,
+        width: 440,
+        url: "import/import.html"
+    });
 }
 
 // =====================
 // DÉMARRAGE
 // =====================
-
 init();

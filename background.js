@@ -1,3 +1,5 @@
+console.info('ScratchPing: background script loaded.');
+
 // =====================
 // KEEPALIVE
 // =====================
@@ -36,6 +38,8 @@ async function checkAndNotify() {
     const data = await new Promise(resolve => {
         chrome.storage.local.get(['projects', 'notifiedProjects', 'notifState'], resolve);
     });
+
+    if (!data) return;
 
     const projects         = data.projects ?? [];
     const notifiedProjects = data.notifiedProjects ?? [];
@@ -103,10 +107,28 @@ async function checkAndNotify() {
 // =====================
 
 async function getScratchSession() {
+    console.info('ScratchPing: looking up the Scratch session cookie.');
     return new Promise((resolve) => {
-        chrome.cookies.get(
-            { url: 'https://scratch.mit.edu', name: 'scratchsessionsid' },
-            (cookie) => resolve(cookie?.value ?? null)
+        // Firefox is more reliable with a domain query than a URL query here:
+        // the Scratch session cookie can have a domain/path that differs from
+        // the page currently open in the tab.
+        chrome.cookies.getAll(
+            { domain: 'scratch.mit.edu', name: 'scratchsessionsid' },
+            (cookies) => {
+                if (chrome.runtime.lastError) {
+                    console.warn('ScratchPing: unable to read Scratch cookies.', chrome.runtime.lastError.message);
+                    resolve(null);
+                    return;
+                }
+
+                console.info(`ScratchPing: ${cookies.length} Scratch session cookie(s) found.`);
+
+                const cookie = cookies
+                    .filter(item => item.value)
+                    .sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0))[0];
+                console.info(`ScratchPing: session ${cookie ? 'available' : 'unavailable'}.`);
+                resolve(cookie?.value ?? null);
+            }
         );
     });
 }
@@ -254,35 +276,31 @@ async function fetchProjectInfo(projectId, sessionId) {
 // MESSAGE HANDLER
 // =====================
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === 'PING') {
-        sendResponse(true);
-        return true;
+        // pass
     }
     if (msg.type === 'GET_SESSION') {
-        getScratchSession().then(sendResponse);
-        return true;
+        console.info('ScratchPing: GET_SESSION message received.');
+        return getScratchSession().then(sessionId => {
+            console.info(`ScratchPing: sending ${sessionId ? 'a session' : 'no session'} to the popup.`);
+            return sessionId;
+        });
     }
     if (msg.type === 'GET_SCRATCH_LOGS') {
-        fetchScratchLogs(msg.projectId, msg.sessionId).then(sendResponse);
-        return true;
+        return fetchScratchLogs(msg.projectId, msg.sessionId);
     }
     if (msg.type === 'CHECK_CLOUD_VARS') {
-        checkCloudVars(msg.projectId).then(sendResponse);
-        return true;
+        return checkCloudVars(msg.projectId);
     }
     if (msg.type === 'ENSURE_TW_CONNECTIONS') {
         ensureTWConnections(msg.projectIds);
-        sendResponse(true);
-        return true;
     }
     if (msg.type === 'GET_TW_ACTIVE') {
-        isTWActive(msg.projectId).then(sendResponse);
-        return true;
+        return isTWActive(msg.projectId);
     }
     if (msg.type === 'GET_PROJECT_INFO') {
-        fetchProjectInfo(msg.projectId, msg.sessionId).then(sendResponse);
-        return true;
+        return fetchProjectInfo(msg.projectId, msg.sessionId);
     }
     if (msg.type === 'NOTIFY') {
         chrome.notifications.create({
@@ -291,7 +309,5 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             title:   'ScratchPing !',
             message: msg.body
         });
-        sendResponse(true);
-        return true;
     }
 });

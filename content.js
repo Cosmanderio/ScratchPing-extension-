@@ -90,34 +90,61 @@ async function removeProject(projectId) {
 async function updateList() {
     const projectId = getProjectId();
     if (!projectId) return;
+    if (!isScratch) return;
+
+    cloudProject = false;
+    document.querySelectorAll(".extension-content").forEach(ext => {
+        ext.childNodes.forEach(child => {
+            if (child.href?.includes("cloudmonitor")) {
+                cloudProject = true;
+            }
+        });
+    });
+    if (!cloudProject) return;
 
     let container = document.getElementById("scratchping-list");
 
     if (!container) {
-        const notes =
-            document.querySelector(".project-notes") ||
-            document.querySelector('[class*="project-notes"]') ||
-            document.querySelector('[class*="description-block"]');
+        let top_div;
+        if (isScratch) {
+            top_div = document.querySelector(".preview .inner");
+        } else {
+            top_div = document.querySelector(".interface_section_3pFkT .cloud-variable-badge_badge_2kZVK")?.parentElement;
+        }
 
-        if (!notes) return;
+        if (!top_div) return;
 
         container = document.createElement("div");
         container.id = "scratchping-list";
         container.style.cssText = `
-            margin-bottom: 12px;
+            margin: 2px 12px;
             font-family: sans-serif;
-            font-size: 12px;
+            font-size: 14px;
             padding: 6px 0;
         `;
+        container.innerHTML = `
+        <label for="unroll-btn" style="font-weight:700;color:#855cd6;cursor:pointer;">Active Players: </label>
+        <span id="nb_users" style="opacity:.8;margin:0 4px;"></span>
+        <input id="unroll-btn" type="button" value="➤" style="background:none;border:none;transition:transform 150ms">
+        <ul style="display:none;margin=none;padding=none;"></ul>
+        `;
 
-        notes.parentNode.insertBefore(container, notes);
+        const unroll_btn = container.querySelector("#unroll-btn");
+        if (unroll_btn) {
+            unroll_btn.active = false;
+            unroll_btn.addEventListener("click", () => {
+                unroll_btn.active = !unroll_btn.active;
+                unroll_btn.style.transform = unroll_btn.active ? "rotate(90deg)" : "";
+                unroll_btn.parentElement.querySelector("ul").style.display = unroll_btn.active ? "" : "none";
+            });
+        }
+
+        top_div.appendChild(container);
+
     }
 
-    container.innerHTML = `
-        <div style="font-weight:700;color:#855cd6;">Active Players</div>
-        <div style="opacity:.5">Loading...</div>
-    `;
-
+    container.querySelector("span#nb_users").textContent = "Loading...";
+    
     const sessionId = await sendMsg({ type: "GET_SESSION" });
 
     const logs = await sendMsg({
@@ -127,7 +154,7 @@ async function updateList() {
     });
 
     if (!logs) {
-        container.innerHTML += `<div style="opacity:.5">No data</div>`;
+        container.querySelector("span#nb_users").textContent = "No data";
         return;
     }
 
@@ -145,33 +172,29 @@ async function updateList() {
     const users = Object.entries(lastSeen)
         .sort((a, b) => b[1] - a[1]);
 
-    container.innerHTML = `
-        <div style="font-weight:700;color:#855cd6;margin-bottom:6px">
-            Active Players
-        </div>
-    `;
+    container.querySelector("span#nb_users").textContent = users.length;
 
-    if (users.length === 0) {
-        container.innerHTML += `<div style="opacity:.5">None</div>`;
-        return;
-    }
+    const ul = container.querySelector("ul");
+    if (!ul) return;
 
+    ul.innerHTML = "";
     for (const [user, ts] of users) {
-        const row = document.createElement("div");
+        const row = document.createElement("li");
         row.style.whiteSpace = "nowrap";
+        row.style.margin = "2px 0"
 
         row.innerHTML = `
             <a href="https://scratch.mit.edu/users/${user}"
                target="_blank"
-               style="color:#855cd6;text-decoration:none;font-weight:600;margin-right:4px;">
+               style="color:#855cd6;text-decoration:none;font-weight:600;margin-right:4px;font-size:14px;">
                 ${user}
             </a>
             <span style="opacity:.6;font-size:11px;">
-                (${Math.floor((Date.now() - ts) / 60000)}m ago)
+                (${Math.max(0, Math.floor((Date.now() - ts) / 60000))}m ago)
             </span>
         `;
 
-        container.appendChild(row);
+        ul.appendChild(row);
     }
 }
 
@@ -191,11 +214,12 @@ async function injectButton() {
         if (!buttonsRow) return;
 
         if (document.getElementById("scratchping-btn")) return;
+        const btn = document.createElement("button");
+        btn.style.display = "none";
+        btn.id = "scratchping-btn";
+        buttonsRow.appendChild(btn);
 
         let alreadyAdded = await isAlreadyAdded(projectId);
-
-        const btn = document.createElement("button");
-        btn.id = "scratchping-btn";
 
         // =========================
         // DESIGN STRICTEMENT IDENTIQUE
@@ -258,8 +282,7 @@ async function injectButton() {
 
             delete btn.dataset.busy;
         });
-
-        buttonsRow.appendChild(btn);
+        btn.style.display = "";
     };
 
     await mount();
@@ -281,14 +304,26 @@ function main() {
     injectButton();
 }
 
+let isScratch = location.href.includes("scratch.mit.edu");
+
 main();
 
 setInterval(updateList, 10000);
 
 let lastUrl = location.href;
-new MutationObserver(() => {
+new MutationObserver(mutations => {
+    
+    isScratch = location.href.includes("scratch.mit.edu");
+
     if (location.href !== lastUrl) {
         lastUrl = location.href;
         main();
+    } else {
+        for (let mut of mutations) {
+            if (mut.target?.className === "inner" &&
+                mut.addedNodes?.[0]?.className === "flex-row preview-row") {
+                updateList();
+            }
+        }
     }
 }).observe(document.body, { childList: true, subtree: true });

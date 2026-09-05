@@ -44,6 +44,65 @@ button { cursor: pointer; border: none; font-family: 'Outfit', sans-serif; }
 }
 .icon-btn:hover { background: #ebe8f8; color: #855cd6; }
 
+/* ===== PROMPT + ALERT ===== */
+
+#prompt_alert {
+    display: none;
+    flex-direction: column;
+    position: absolute;
+    height: 100%;
+    width: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+    justify-content: center;
+    align-items: center;
+}
+
+#prompt_txt {
+    margin-bottom: 10px;
+    font-size: 20px;
+    color: white;
+    max-width: 75%;
+    text-align: center;
+}
+
+#prompt_input {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+}
+
+#prompt_txt_input {
+    height: 35px;
+    margin-right: 10px;
+    border: 2px solid #aaa;
+    border-radius: 6px;
+    padding: 1px 5px;
+    text-align: center;
+    font-size: 16px;
+}
+
+#prompt_txt_input:focus { outline: none; }
+
+#prompt_btn {
+    height: 35px;
+    padding: 6px 8px;
+    background-color: #2aa5e1;
+    border: 1px solid #2384b5;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+#prompt_btn:hover {
+    background-color: #2fb0f1;
+}
+
+#alert {
+    display: none;
+}
+
 /* ===== LOGIN ===== */
 
 #login_box {
